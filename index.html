@@ -83,8 +83,6 @@
         
         .lobby-logo { margin-bottom: 40px; }
         .lobby-logo h1 { font-size: 85px; margin: 0; color: var(--v-red); line-height: 0.8; letter-spacing: -2px; font-weight: 900; }
-        .lobby-logo h2 { font-size: 18px; margin: 5px 0 0 0; color: var(--v-gray); letter-spacing: 10px; font-weight: 500; text-transform: uppercase;}
-
         .player-setup { margin-top: 20px; margin-bottom: 40px;}
         .setup-label { display: block; font-size: 12px; color: var(--v-gray); margin-bottom: 10px; letter-spacing: 3px; font-weight: 700; text-transform: uppercase;}
         
@@ -738,13 +736,18 @@
                 document.getElementById('mp-host-name').style.color = state.playerConfig.color;
             });
             peer.on('connection', c => {
-                conn = c;
-                conn.on('open', () => {
-                    setupMPConn();
-                    document.getElementById('mp-status-text').innerText = "LINK ESTABLISHED. READY TO DEPLOY.";
-                    document.getElementById('btn-mp-deploy').classList.remove('hidden');
-                    conn.send({type:'info', name: state.playerConfig.name, color: state.playerConfig.color});
-                });
+                console.log("Incoming connection from:", c.peer);
+                if(conn) conn.close();
+                conn = c; isHost = true;
+                setupMPConn();
+                // Send current game settings to guest immediately
+                setTimeout(() => {
+                    if(conn && conn.open) {
+                        conn.send({type:'info', name:state.playerConfig.name, color:state.playerConfig.color});
+                        document.getElementById('btn-mp-deploy').classList.remove('hidden');
+                        document.getElementById('mp-status-text').innerText = "READY FOR DEPLOYMENT";
+                    }
+                }, 500);
             });
         }
 
@@ -756,18 +759,31 @@
             document.getElementById('mp-status-text').innerText = "LINKING TO HOST NETWORK...";
             isMP = true; state.mode = 'MULTIPLAYER P2P'; updateLobbyText();
             
-            peer = new Peer();
-            peer.on('open', () => {
-                conn = peer.connect(jId);
-                conn.on('open', () => {
-                    isHost = false; setupMPConn();
-                    document.getElementById('display-room-id').innerText = jId;
-                    document.getElementById('mp-status-text').innerText = "CONNECTED. WAITING FOR HOST DEPLOYMENT.";
-                    document.getElementById('mp-guest-name').innerText = state.playerConfig.name;
-                    document.getElementById('mp-guest-name').style.color = state.playerConfig.color;
-                    
-                    conn.send({type:'info', name: state.playerConfig.name, color: state.playerConfig.color});
-                });
+            if(!peer) peer = new Peer();
+            
+            const connTimeout = setTimeout(() => {
+                if(!conn || !conn.open) {
+                    alert("Connection Timeout. Please check Peer ID.");
+                    if(C.mpWait) C.mpWait.classList.add('hidden');
+                }
+            }, 10000);
+
+            console.log("Connecting to peer:", jId);
+            if(conn) conn.close();
+            conn = peer.connect(jId);
+            
+            conn.on('open', () => {
+                clearTimeout(connTimeout);
+                console.log("Connection opened!");
+                isHost = false; 
+                setupMPConn();
+                conn.send({type:'info', name:state.playerConfig.name, color:state.playerConfig.color});
+            });
+            
+            conn.on('error', err => {
+                clearTimeout(connTimeout);
+                alert("Connection Error: " + err.type);
+                if(C.mpWait) C.mpWait.classList.add('hidden');
             });
         }
 
