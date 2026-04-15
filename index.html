@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VALOLITE BETA</title>
+    <title>VALOLITE</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <!-- Font Oswald sebagai pengganti Tungsten (Font Valorant) -->
@@ -777,7 +777,13 @@
 
         // === MULTIPLAYER LOGIC ===
         function createPeer() {
+            // IMPORTANT: On HTTPS deployments (e.g. Vercel), explicitly use secure PeerJS Cloud broker.
+            // This avoids ws/wss mismatch and reduces random "Peer unavailable" / timeout issues.
             return new Peer(undefined, {
+                host: '0.peerjs.com',
+                port: 443,
+                path: '/',
+                secure: true,
                 debug: 2,
                 config: {
                     iceServers: [
