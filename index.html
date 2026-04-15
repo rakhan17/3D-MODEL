@@ -472,6 +472,7 @@
 
         // Physics & Game
         let mapBoxes = [], targets = [], enemies = [], projectiles = [], particles = [], tracers = [], flyingHeads = [];
+        let walkBoxes = [];
         let pVel = new THREE.Vector3(), pDir = new THREE.Vector3();
         let isGnd = true, isDead = false;
         const PHY = { spd: 400, sSpd: 650, jmp: 75, grav: 250, h: 12, sH: 6, r: 2 };
@@ -542,6 +543,7 @@
             initLobby3D();
             bindUI();
             updateCrosshairVisuals();
+            resizeAll();
             
             // Remove Fade
             if(C.fade) setTimeout(() => { C.fade.style.opacity = 0; }, 500);
@@ -566,17 +568,20 @@
             camera.aspect = w / h;
             camera.updateProjectionMatrix();
             if(C.espCanvas) {
+                // HiDPI canvas for crisp ESP lines
                 const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
                 C.espCanvas.style.width = w + 'px';
                 C.espCanvas.style.height = h + 'px';
                 C.espCanvas.width = Math.floor(w * dpr);
                 C.espCanvas.height = Math.floor(h * dpr);
                 if(espCtx) {
+                    // Draw using CSS pixels (transform scales to device pixels)
                     espCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
                     espCtx.imageSmoothingEnabled = false;
                 }
             }
         }
+
 
         // 3D Engine Initialization
         function init3D() {
@@ -601,9 +606,8 @@
 
             setupWeapons();
             window.addEventListener('resize', () => {
-                camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
                 if(lobbyCam) { lobbyCam.aspect = window.innerWidth / window.innerHeight; lobbyCam.updateProjectionMatrix(); }
-                renderer.setSize(window.innerWidth, window.innerHeight);
+                resizeAll();
             });
         }
 
@@ -1315,10 +1319,14 @@
         // === ENVIRONMENT ===
         function buildEnv() {
             scene.children = scene.children.filter(c => c.type.includes('Light') || c === camera);
-            mapBoxes = []; targets = []; enemies = []; flyingHeads = []; peerPlayer = null;
+            mapBoxes = []; walkBoxes = []; targets = []; enemies = []; flyingHeads = []; peerPlayer = null;
             if(C.hpNum) C.hpNum.style.color = 'var(--v-white)'; if(C.hpBar) C.hpBar.style.background = 'var(--v-white)';
             
             let ambientCol = 0xffffff, fogCol = 0x6eb8ff, bgCol = 0x6eb8ff;
+
+            // Make sure camera doesn't see its own "ghost" if we ever add a local model
+            camera.children = camera.children.filter(c => c === weapons[0]?.grp || c === weapons[1]?.grp || c === weapons[2]?.grp || c.type.includes('Light'));
+
 
             if(state.mode === 'NIGHT') {
                 if(C.timer) C.timer.innerText = "NIGHT OPS"; 
@@ -1353,39 +1361,113 @@
             scene.background = new THREE.Color(bgCol); scene.fog = new THREE.FogExp2(fogCol, 0.001);
         }
 
-        function aBox(x, y, z, w, h, d, mat) {
+        function aBox(x, y, z, w, h, d, mat, walk=false) {
             let m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat);
             m.position.set(x, y+h/2, z); m.castShadow = true; m.receiveShadow = true; scene.add(m);
-            targets.push(m); m.updateMatrixWorld(); mapBoxes.push(new THREE.Box3().setFromObject(m));
+            targets.push(m);
+            m.updateMatrixWorld();
+            const bx = new THREE.Box3().setFromObject(m);
+            mapBoxes.push(bx);
+            if(walk) walkBoxes.push(bx);
             return m;
+        }
+
+        function getWalkY(x, z, curY=0) {
+            let best = 0;
+            let found = false;
+            const maxStepUp = 18;
+            const maxDrop = 60;
+            for(const b of walkBoxes) {
+                if(x >= b.min.x && x <= b.max.x && z >= b.min.z && z <= b.max.z) {
+                    const top = b.max.y;
+                    if(top <= curY + maxStepUp && top >= curY - maxDrop) {
+                        if(!found || top > best) { best = top; found = true; }
+                    }
+                }
+            }
+            return found ? best : 0;
         }
 
         function buildArena(type) {
             const fM = new THREE.MeshStandardMaterial({color:0x88929e, roughness:0.9});
             const wM = new THREE.MeshStandardMaterial({color:0xece8e1, roughness:0.9});
             const cM = new THREE.MeshStandardMaterial({color:0x394867, roughness:0.8});
+            const gM = new THREE.MeshStandardMaterial({color:0x242b36, roughness:0.95});
+            const brM = new THREE.MeshStandardMaterial({color:0x6c574b, roughness:0.9});
+            const dkM = new THREE.MeshStandardMaterial({color:0x111923, roughness:0.9});
 
-            aBox(0, -2, 0, 1500, 2, 1500, fM);
+            aBox(0, -0.5, 0, 1500, 0.5, 1500, gM, true);
             aBox(0, 0, -750, 1500, 100, 20, wM); aBox(0, 0, 750, 1500, 100, 20, wM);
             aBox(-750, 0, 0, 20, 100, 1500, wM); aBox(750, 0, 0, 20, 100, 1500, wM);
 
-            if(type === 'MAZE') {
-                for(let i=0; i<200; i++) {
-                    let cx = (Math.random()-0.5)*1300; let cz = (Math.random()-0.5)*1300;
-                    if(Math.abs(cz) > 500) continue;
-                    aBox(cx, 0, cz, 20+Math.random()*40, 15+Math.random()*20, 20+Math.random()*40, Math.random()>0.5?wM:cM);
+            const addHouse = (x, z) => {
+                const W = 140, D = 120, H = 60;
+                aBox(x, 0, z, W, 1, D, fM, true);
+                aBox(x - W/2 + 6, 0, z, 12, H, D, brM);
+                aBox(x + W/2 - 6, 0, z, 12, H, D, brM);
+                aBox(x, 0, z - D/2 + 6, W, H, 12, brM);
+                aBox(x - 30, 0, z + D/2 - 6, 50, H, 12, brM); // Door gap
+                aBox(x + 50, 0, z + D/2 - 6, 50, H, 12, brM);
+                aBox(x, H, z, W+4, 6, D+4, dkM); // Roof
+                // Interior/Exterior Crates
+                aBox(x+20, 0, z+20, 18, 18, 18, cM);
+                aBox(x-25, 0, z-25, 12, 12, 12, cM);
+            };
+
+            if(type === 'ARENA') {
+                aBox(0, 0, 0, 1600, 0.5, 1600, gM, true); // Ground
+                
+                // Optimized grid of houses (4x4 instead of massive 6x6 to save memory)
+                for(let ix=-2; ix<=1; ix++) {
+                    for(let iz=-2; iz<=1; iz++) {
+                        if(ix===0 && iz===0) continue;
+                        const px = ix * 350 + (Math.random()-0.5)*100;
+                        const pz = iz * 350 + (Math.random()-0.5)*100;
+                        addHouse(px, pz);
+                    }
                 }
-            } else if (type === 'ARENA') {
-                aBox(0,0,0, 100,30,100, cM); aBox(-300,0,-200, 40,50,400, wM); aBox(300,0,200, 40,50,400, wM);
+
+                // Central obstacles
+                for(let i=0; i<8; i++) {
+                    const ang = (i/8)*Math.PI*2;
+                    aBox(Math.cos(ang)*120, 0, Math.sin(ang)*120, 25, 35, 25, cM);
+                }
+
+                // Scatter crates - Optimized amount (80 is enough for tactical cover without crashing)
                 for(let i=0; i<80; i++) {
-                    let cx = (Math.random()-0.5)*1300; let cz = (Math.random()-0.5)*1300;
-                    if(Math.abs(cz) > 600) continue;
-                    aBox(cx, 0, cz, 20,15,20, cM);
+                    let rx = (Math.random()-0.5)*1500;
+                    let rz = (Math.random()-0.5)*1500;
+                    if(Math.abs(rx)<80 && Math.abs(rz)<80) continue;
+                    // Disable shadow for these many small boxes to prevent crash
+                    const m = aBox(rx, 0, rz, 12+Math.random()*12, 12+Math.random()*20, 12+Math.random()*12, Math.random()>0.5?brM:dkM);
+                    m.castShadow = false; m.receiveShadow = false;
                 }
-            } else { // PIT
-                aBox(0,0,-400, 800,100,20, cM); aBox(0,0,400, 800,100,20, cM);
-                aBox(-400,0,0, 20,100,800, cM); aBox(400,0,0, 20,100,800, cM);
-                aBox(0,0,0, 20,30,200, wM); aBox(0,0,0, 200,30,20, wM);
+            } else if(type === 'MAZE') {
+                const lane = 140;
+
+                for(let i=-4; i<=4; i++) {
+                    aBox(i*lane, 0, 0, 30, 80, 1100, cM);
+                }
+                for(let j=-3; j<=3; j++) {
+                    if(j===0) continue;
+                    aBox(0, 0, j*lane*2, 1100, 80, 30, cM);
+                }
+                aBox(0, 0, 0, 1200, 2, 1200, fM, true);
+                for(let k=0; k<10; k++) {
+                    aBox(-520 + k*110, 0, -300, 60, 18, 60, fM, true);
+                    aBox(-520 + k*110, 18, -300, 60, 18, 60, fM, true);
+                }
+            } else {
+                aBox(0, -20, 0, 700, 20, 700, fM);
+                aBox(0, 0, -380, 800, 120, 20, cM);
+                aBox(0, 0, 380, 800, 120, 20, cM);
+                aBox(-380, 0, 0, 20, 120, 800, cM);
+                aBox(380, 0, 0, 20, 120, 800, cM);
+                for(let i=0; i<10; i++) {
+                    aBox(-300 + i*60, i*4, -310 + i*6, 120, 8, 120, fM, true);
+                    aBox(300 - i*60, i*4, 310 - i*6, 120, 8, 120, fM, true);
+                }
+                aBox(0, 0, 0, 200, 8, 200, fM, true);
             }
         }
 
@@ -1395,7 +1477,7 @@
             const wM = new THREE.MeshStandardMaterial({ color: 0xe5e0d8 });
             const dw = new THREE.MeshStandardMaterial({ color: 0x888888 });
 
-            aBox(0,-2,0, 800,2,800, fM);
+            aBox(0,-2,0, 800,2,800, fM, true);
             aBox(0,0,-300, 800,80,20, dw); aBox(-400,0,0, 20,80,800, wM); aBox(400,0,0, 20,80,800, wM); aBox(0,0,400, 800,80,20, wM);
             for(let i=0; i<8; i++) aBox(0, 70+i*2, 200-i*20, 800,2,30, wd);
             for(let x=-300; x<=300; x+=150) { aBox(x,0,-100, 8,70,8, wd); aBox(x,0,200, 8,70,8, wd); }
@@ -1411,7 +1493,8 @@
             if(isPrac) { rx = (Math.random()-0.5)*600; rz = -100 - Math.random()*150; }
             else if(Math.abs(rx) < 100 && rz > 500) rz -= 400;
             
-            r6.group.position.set(rx, 0, rz);
+            const y = getWalkY(rx, rz, 0);
+            r6.group.position.set(rx, y, rz);
             let eObj = { ...r6, hp:100, isDead:false, ammo:15, isRel:false, rTmr:0, sTmr:0, stTmr:0, state:'IDLE', vel:new THREE.Vector3(), tDir:new THREE.Vector3(1,0,0), isPrac:isPrac };
 
             r6.group.traverse(c => {
@@ -1564,6 +1647,9 @@
         }
 
         function simAI(dt) {
+            const snap = (v) => Math.round(v) + 0.5;
+            const snap2 = (v) => Math.round(v);
+
             let chkLoS = (s,t) => {
                 let d = new THREE.Vector3().subVectors(t,s).normalize(); let dist = s.distanceTo(t);
                 let r = new THREE.Raycaster(s, d, 0, dist);
@@ -1573,19 +1659,21 @@
 
             // ESP overlay draw
             if(espCtx && C.espCanvas) {
-                const ew = C.espCanvas.clientWidth || window.innerWidth;
-                const eh = C.espCanvas.clientHeight || window.innerHeight;
-                espCtx.clearRect(0, 0, ew, eh);
+                espCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
                 espCtx.lineCap = 'butt';
                 espCtx.lineJoin = 'miter';
+                espCtx.imageSmoothingEnabled = false; 
             }
+
+
+
 
             let potentialTargets = [...enemies];
             if(isMP && peerPlayer && !peerPlayer.isDead) potentialTargets.push(peerPlayer);
 
             if(state.sysC.esp && espCtx && C.espCanvas) {
-                const ew = C.espCanvas.clientWidth || window.innerWidth;
-                const eh = C.espCanvas.clientHeight || window.innerHeight;
+                const ew = window.innerWidth;
+                const eh = window.innerHeight;
                 potentialTargets.forEach(e => {
                     if(!e || e.isDead) return;
 
@@ -1593,6 +1681,8 @@
                     e.headGroup.getWorldPosition(headW);
                     const feetW = e.group.position.clone();
                     
+                    const camDist = camera.position.distanceTo(e.group.position);
+
                     // Add padding for head and feet
                     headW.y += 3; 
                     feetW.y -= 1;
@@ -1600,7 +1690,6 @@
                     const head = headW.project(camera);
                     const feet = feetW.project(camera);
 
-                    const camDist = camera.position.distanceTo(e.group.position);
                     if(head.z < 1 && camDist < 5000) {
                         const x = (head.x * 0.5 + 0.5) * ew;
                         const yHead = (head.y * -0.5 + 0.5) * eh;
@@ -1613,41 +1702,41 @@
                         // DRAW ESP BOX
                         espCtx.strokeStyle = '#00ffcc';
                         espCtx.lineWidth = 2;
-                        espCtx.strokeRect(x - w/2, yTop, w, h);
-                        
+                        espCtx.strokeRect(snap2(x - w/2), snap2(yTop), snap2(w), snap2(h));
+
                         // DRAW HP BAR
                         const hpPct = e.hp / 100;
-                        espCtx.fillStyle = 'rgba(0,0,0,0.7)';
-                        espCtx.fillRect(x - w/2 - 8, yTop, 4, h);
+                        espCtx.fillStyle = 'rgba(0,0,0,0.8)';
+                        espCtx.fillRect(snap2(x - w/2 - 6), snap2(yTop), 3, snap2(h));
                         espCtx.fillStyle = hpPct > 0.4 ? '#00ffcc' : '#ff4655';
-                        espCtx.fillRect(x - w/2 - 8, yTop + h * (1 - hpPct), 4, h * hpPct);
+                        espCtx.fillRect(snap2(x - w/2 - 6), snap2(yTop + h * (1 - hpPct)), 3, snap2(h * hpPct));
                     }
+
                 });
             }
 
             if(state.sysC.espl && espCtx && C.espCanvas) {
-                const ew = C.espCanvas.clientWidth || window.innerWidth;
-                const eh = C.espCanvas.clientHeight || window.innerHeight;
-                const cx = ew * 0.5;
-                const cy = eh * 0.5;
+                const cx = window.innerWidth * 0.5;
+                const cy = window.innerHeight * 0.5;
                 potentialTargets.forEach(e => {
                     if(!e || e.isDead) return;
                     const headW = new THREE.Vector3();
                     e.headGroup.getWorldPosition(headW);
-                    headW.y += 2;
                     const p = headW.project(camera);
                     if(p.z < 1) {
-                        const x = (p.x * 0.5 + 0.5) * ew;
-                        const y = (p.y * -0.5 + 0.5) * eh;
+                        const x = (p.x * 0.5 + 0.5) * window.innerWidth;
+                        const y = (p.y * -0.5 + 0.5) * window.innerHeight;
                         espCtx.strokeStyle = '#00ffcc';
                         espCtx.lineWidth = 2;
                         espCtx.beginPath();
-                        espCtx.moveTo(cx, cy);
-                        espCtx.lineTo(x, y);
+                        // Pixel-snap for crisp 2px lines
+                        espCtx.moveTo(snap2(cx), snap2(cy));
+                        espCtx.lineTo(snap2(x), snap2(y));
                         espCtx.stroke();
                     }
                 });
             }
+
 
             if(state.sysC.aa && isAim && potentialTargets.length>0) {
                 let bE=null, bD=Infinity;
@@ -1678,10 +1767,28 @@
 
             enemies.forEach(e => {
                 if(e.isDead || isDead || e.isPrac) return;
+                // Allow bots to navigate multi-level buildings by snapping to nearest walkable surface.
+                e.group.position.y = getWalkY(e.group.position.x, e.group.position.z, e.group.position.y);
+                
                 const dP = e.group.position.distanceTo(camera.position);
                 const eP = new THREE.Vector3(); e.headGroup.getWorldPosition(eP);
                 const tP = camera.position.clone(); tP.y -= 2;
                 const loS = chkLoS(eP, tP);
+
+                // HIGH-GROUND BIAS: If bot is on ground and not in combat, occasionally target a nearby high walkable surface
+                if(e.group.position.y < 5 && !loS && Math.random() < 0.02) {
+                    for(const b of walkBoxes) {
+                        if(b.max.y > 50) { // target upper floors
+                            const dx = (b.min.x + b.max.x)/2 - e.group.position.x;
+                            const dz = (b.min.z + b.max.z)/2 - e.group.position.z;
+                            if(Math.sqrt(dx*dx + dz*dz) < 300) {
+                                e.tDir.set(dx, 0, dz).normalize();
+                                break;
+                            }
+                        }
+                    }
+                }
+
 
                 // SMOOTH AI ROTATION & MOVEMENT
                 if(loS) {
@@ -1728,6 +1835,32 @@
                 } else {
                     if(e.state==='CHASE') { let d=new THREE.Vector3().subVectors(camera.position,e.group.position); d.y=0; e.tDir.copy(d.normalize()); }
                     else if(e.tDir.lengthSq()===0) e.tDir.set(1,0,0);
+
+                    // Hide behavior: when not in LoS, occasionally prefer moving toward cover (close to walls/buildings)
+                    if(!loS && Math.random() < 0.08) {
+                        const cands = [];
+                        for(let i=0; i<10; i++) {
+                            const ang = Math.random()*Math.PI*2;
+                            const r = 120 + Math.random()*220;
+                            const nx = e.group.position.x + Math.cos(ang)*r;
+                            const nz = e.group.position.z + Math.sin(ang)*r;
+                            const ny = getWalkY(nx, nz, e.group.position.y);
+                            const b = new THREE.Box3(new THREE.Vector3(nx-3, ny+0.6, nz-3), new THREE.Vector3(nx+3, ny+12, nz+3));
+                            let nearWall = false;
+                            for(const m of mapBoxes) {
+                                if(b.intersectsBox(m)) continue;
+                                const dx = Math.min(Math.abs(nx - m.min.x), Math.abs(nx - m.max.x));
+                                const dz = Math.min(Math.abs(nz - m.min.z), Math.abs(nz - m.max.z));
+                                if((dx < 20 && nz > m.min.z && nz < m.max.z) || (dz < 20 && nx > m.min.x && nx < m.max.x)) { nearWall = true; break; }
+                            }
+                            if(nearWall) cands.push(new THREE.Vector3(nx, ny, nz));
+                        }
+                        if(cands.length) {
+                            const pick = cands[(Math.random()*cands.length)|0];
+                            const dir = new THREE.Vector3().subVectors(pick, e.group.position); dir.y = 0;
+                            if(dir.lengthSq()>1) e.tDir.copy(dir.normalize());
+                        }
+                    }
                     
                     let eB = new THREE.Box3(new THREE.Vector3(e.group.position.x-3+e.tDir.x*6, 0, e.group.position.z-3+e.tDir.z*6), new THREE.Vector3(e.group.position.x+3+e.tDir.x*6, 10, e.group.position.z+3+e.tDir.z*6));
                     let hb=false; for(let m of mapBoxes) { if(eB.intersectsBox(m)) {hb=true; break;} }
@@ -1736,6 +1869,7 @@
 
                 let nextPos = e.group.position.clone().addScaledVector(e.tDir, 200*dt);
                 clampToArena(nextPos);
+                nextPos.y = getWalkY(nextPos.x, nextPos.z, e.group.position.y);
                 if(botCollidesAt(e, nextPos)) {
                     e.tDir.applyEuler(new THREE.Euler(0, (Math.random()*1.2 + 0.6) * (Math.random()>0.5?1:-1), 0));
                 } else {
@@ -1851,8 +1985,10 @@
                 }
             }
             
-            let rz = isMP ? (isHost ? 650 : -650) : (state.mode === 'PRACTICE' ? 100 : 650);
-            camera.position.set(0, PHY.h, rz); 
+            let rz = isMP ? (isHost ? 600 : -600) : (state.mode === 'PRACTICE' ? 100 : 600);
+            let rx = isMP ? (isHost ? 100 : -100) : 0;
+            const ry = getWalkY(rx, rz, 0) + PHY.h;
+            camera.position.set(rx, ry, rz); 
             yaw = isMP && !isHost ? Math.PI : 0; pitch = 0; camera.quaternion.setFromEuler(new THREE.Euler(pitch,yaw,0,'YXZ'));
             
             state.running = true; clock.getDelta(); lastRegen = clock.getElapsedTime();
