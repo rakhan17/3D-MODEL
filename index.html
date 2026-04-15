@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VALOLITE OLIVE</title>
+    <title>VALOLITE</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <!-- Font Oswald sebagai pengganti Tungsten (Font Valorant) -->
@@ -1426,8 +1426,8 @@
                 aBox(x - W/2 + 6, 0, z, 12, H, D, brM);
                 aBox(x + W/2 - 6, 0, z, 12, H, D, brM);
                 aBox(x, 0, z - D/2 + 6, W, H, 12, brM);
-                aBox(x - 30, 0, z + D/2 - 6, 50, H, 12, brM); // Door gap
-                aBox(x + 50, 0, z + D/2 - 6, 50, H, 12, brM);
+                aBox(x - 40, 0, z + D/2 - 6, 40, H, 12, brM); // Door gap (wider)
+                aBox(x + 60, 0, z + D/2 - 6, 40, H, 12, brM);
                 aBox(x, H, z, W+4, 6, D+4, dkM); // Roof
                 // Interior/Exterior Crates
                 aBox(x+20, 0, z+20, 18, 18, 18, cM);
@@ -1512,10 +1512,19 @@
             let rx = (Math.random()-0.5)*1200, rz = (Math.random()-0.5)*1200;
             if(isPrac) { rx = (Math.random()-0.5)*600; rz = -100 - Math.random()*150; }
             else if(Math.abs(rx) < 100 && rz > 500) rz -= 400;
+
+            // Prevent spawning inside houses/walls/crates
+            for(let tries=0; tries<30; tries++) {
+                const ty = getWalkY(rx, rz, 0);
+                const tp = new THREE.Vector3(rx, ty, rz);
+                if(!botCollidesAt(null, tp)) break;
+                rx = (Math.random()-0.5)*1200;
+                rz = (Math.random()-0.5)*1200;
+            }
             
             const y = getWalkY(rx, rz, 0);
             r6.group.position.set(rx, y, rz);
-            let eObj = { ...r6, hp:100, isDead:false, ammo:15, isRel:false, rTmr:0, sTmr:0, stTmr:0, state:'IDLE', vel:new THREE.Vector3(), tDir:new THREE.Vector3(1,0,0), isPrac:isPrac };
+            let eObj = { ...r6, hp:100, isDead:false, ammo:15, isRel:false, rTmr:0, sTmr:0, stTmr:0, state:'IDLE', vel:new THREE.Vector3(), tDir:new THREE.Vector3(1,0,0), isPrac:isPrac, stuckT:0, lastPos:r6.group.position.clone() };
 
             r6.group.traverse(c => {
                 if(c.isMesh) {
@@ -1549,6 +1558,34 @@
             );
             for(let m of mapBoxes) {
                 if(bx.intersectsBox(m)) return true;
+            }
+            return false;
+        }
+
+        function botFindFreeDir(fromPos) {
+            // Try multiple directions; return normalized dir or null
+            for(let i=0; i<20; i++) {
+                const ang = (Math.random()*Math.PI*2);
+                const dir = new THREE.Vector3(Math.sin(ang), 0, Math.cos(ang));
+                const np = fromPos.clone().addScaledVector(dir, 40);
+                np.y = getWalkY(np.x, np.z, fromPos.y);
+                if(!botCollidesAt(null, np)) return dir;
+            }
+            return null;
+        }
+
+        function botNudgeToFreeSpot(e) {
+            // Sample nearby spots and teleport slightly if needed
+            const base = e.group.position.clone();
+            for(let i=0; i<30; i++) {
+                const ang = Math.random()*Math.PI*2;
+                const r = 30 + Math.random()*70;
+                const np = new THREE.Vector3(base.x + Math.cos(ang)*r, base.y, base.z + Math.sin(ang)*r);
+                np.y = getWalkY(np.x, np.z, base.y);
+                if(!botCollidesAt(e, np)) {
+                    e.group.position.copy(np);
+                    return true;
+                }
             }
             return false;
         }
@@ -1895,8 +1932,26 @@
                 nextPos.y = getWalkY(nextPos.x, nextPos.z, e.group.position.y);
                 if(botCollidesAt(e, nextPos)) {
                     e.tDir.applyEuler(new THREE.Euler(0, (Math.random()*1.2 + 0.6) * (Math.random()>0.5?1:-1), 0));
+                    e.stuckT = (e.stuckT||0) + dt;
                 } else {
                     e.group.position.copy(nextPos);
+                    // detect stuck: barely moved
+                    const moved = e.group.position.distanceTo(e.lastPos || e.group.position);
+                    if(moved < 0.5) e.stuckT = (e.stuckT||0) + dt;
+                    else e.stuckT = 0;
+                    if(!e.lastPos) e.lastPos = e.group.position.clone();
+                    else e.lastPos.copy(e.group.position);
+                }
+
+                // Unstuck routine: if stuck for too long, force a free direction or nudge out
+                if((e.stuckT||0) > 1.0) {
+                    const freeDir = botFindFreeDir(e.group.position);
+                    if(freeDir) {
+                        e.tDir.copy(freeDir);
+                        e.stuckT = 0;
+                    } else {
+                        if(botNudgeToFreeSpot(e)) e.stuckT = 0;
+                    }
                 }
                 if(e.tDir.lengthSq()>0.1 && (!loS || e.state==='STRAFE'||e.state==='RETREAT')) {
                     const t=clock.getElapsedTime()*20; e.lLeg.rotation.x=Math.sin(t)*0.8; e.rLeg.rotation.x=-Math.sin(t)*0.8; e.lArm.rotation.x=-Math.sin(t)*0.8; e.rArm.rotation.x=Math.sin(t)*0.8;
