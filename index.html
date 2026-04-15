@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VALOLITE</title>
+    <title>VALOLITE BETA</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <!-- Font Oswald sebagai pengganti Tungsten (Font Valorant) -->
@@ -153,7 +153,7 @@
         /* Custom UI Sliders */
         .set-group { display: flex; flex-direction: column; gap: 8px; margin-bottom: 25px;}
         .set-group label { color: var(--v-gray); font-size: 14px; letter-spacing: 2px; display: flex; justify-content: space-between; text-transform: uppercase;}
-        .custom-slider { -webkit-appearance: none; width: 100%; height: 4px; background: rgba(255,255,255,0.1); outline: none; margin-top: 10px;}
+        .custom-slider { appearance: none; -webkit-appearance: none; width: 100%; height: 4px; background: rgba(255,255,255,0.1); outline: none; margin-top: 10px;}
         .custom-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; background: var(--v-red); cursor: pointer; transform: rotate(45deg);}
 
         /* ================= IN-GAME HUD (VALORANT STYLE) ================= */
@@ -464,6 +464,7 @@
         // Weapons
         let weapons = [], actWpn = 0, canShoot = true, isRel = false, relProg = 0, isAim = false;
         let peerPlayer = null;
+        let pendingPeerState = null;
         let cheatHidden = true;
 
         // ESP canvas
@@ -721,18 +722,35 @@
         }
 
         // === MULTIPLAYER LOGIC ===
+        function createPeer() {
+            return new Peer(undefined, {
+                debug: 2,
+                config: {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:global.stun.twilio.com:3478' }
+                    ]
+                }
+            });
+        }
+
         function hostRoom() {
             C.mpJoin.classList.add('hidden'); C.mpWait.classList.remove('hidden');
             document.getElementById('mp-status-text').innerText = "GENERATING SECURE LINK...";
             isMP = true; state.mode = 'MULTIPLAYER P2P'; updateLobbyText();
             
-            peer = new Peer();
+            if(peer) { try { peer.destroy(); } catch(e) {} peer = null; }
+            peer = createPeer();
             peer.on('open', id => {
                 isHost = true;
                 document.getElementById('display-room-id').innerText = id;
                 document.getElementById('mp-status-text').innerText = "WAITING FOR OPPONENT TO JOIN...";
                 document.getElementById('mp-host-name').innerText = state.playerConfig.name;
                 document.getElementById('mp-host-name').style.color = state.playerConfig.color;
+            });
+            peer.on('error', err => {
+                alert("PEER ERROR: " + (err && err.type ? err.type : err));
+                cancelMP();
             });
             peer.on('connection', c => {
                 console.log("Incoming connection from:", c.peer);
@@ -757,32 +775,41 @@
             C.mpJoin.classList.add('hidden'); C.mpWait.classList.remove('hidden');
             document.getElementById('mp-status-text').innerText = "LINKING TO HOST NETWORK...";
             isMP = true; state.mode = 'MULTIPLAYER P2P'; updateLobbyText();
-            
-            if(!peer) peer = new Peer();
-            
-            const connTimeout = setTimeout(() => {
-                if(!conn || !conn.open) {
-                    alert("Connection Timeout. Please check Peer ID.");
-                    if(C.mpWait) C.mpWait.classList.add('hidden');
-                }
-            }, 10000);
 
-            console.log("Connecting to peer:", jId);
-            if(conn) conn.close();
-            conn = peer.connect(jId);
-            
-            conn.on('open', () => {
-                clearTimeout(connTimeout);
-                console.log("Connection opened!");
-                isHost = false; 
-                setupMPConn();
-                conn.send({type:'info', name:state.playerConfig.name, color:state.playerConfig.color});
+            if(peer) { try { peer.destroy(); } catch(e) {} peer = null; }
+            peer = createPeer();
+
+            const overallTimeout = setTimeout(() => {
+                alert("Connection Timeout. Pastikan Host sudah HOST ROOM dan Peer ID benar.");
+                cancelMP();
+            }, 15000);
+
+            peer.on('open', () => {
+                console.log("Guest peer open, connecting to:", jId);
+
+                if(conn) conn.close();
+                conn = peer.connect(jId, { reliable: true });
+
+                conn.on('open', () => {
+                    clearTimeout(overallTimeout);
+                    console.log("Connection opened!");
+                    isHost = false;
+                    setupMPConn();
+                    conn.send({type:'info', name:state.playerConfig.name, color:state.playerConfig.color});
+                    document.getElementById('mp-status-text').innerText = "CONNECTED. WAITING FOR HOST TO DEPLOY...";
+                });
+
+                conn.on('error', err => {
+                    clearTimeout(overallTimeout);
+                    alert("CONNECTION ERROR: " + (err && err.type ? err.type : err));
+                    cancelMP();
+                });
             });
-            
-            conn.on('error', err => {
-                clearTimeout(connTimeout);
-                alert("Connection Error: " + err.type);
-                if(C.mpWait) C.mpWait.classList.add('hidden');
+
+            peer.on('error', err => {
+                clearTimeout(overallTimeout);
+                alert("PEER ERROR: " + (err && err.type ? err.type : err));
+                cancelMP();
             });
         }
 
@@ -797,16 +824,39 @@
                         document.getElementById('mp-host-name').innerText = d.name;
                         document.getElementById('mp-host-name').style.color = d.color;
                     }
+
+                    // If the game already started, ensure the remote player exists now that we know their skin color.
+                    if(isMP && state.running && !peerPlayer) {
+                        spawnPeer();
+                        if(pendingPeerState) {
+                            peerPlayer.tPos.set(pendingPeerState.x, pendingPeerState.y, pendingPeerState.z);
+                            peerPlayer.tRot = pendingPeerState.rot;
+                            peerPlayer.isM = pendingPeerState.moving;
+                            pendingPeerState = null;
+                        }
+                    }
                 }
                 if(d.type === 'start') { startGame(); }
+
+                // Buffer state updates if the peer model isn't spawned yet (prevents enemy stuck at y=5000 / "disappearing")
+                if(d.type === 'state') {
+                    if(peerPlayer) {
+                        peerPlayer.tPos.set(d.x, d.y, d.z);
+                        peerPlayer.tRot = d.rot;
+                        peerPlayer.isM = d.moving;
+                    } else {
+                        pendingPeerState = { x:d.x, y:d.y, z:d.z, rot:d.rot, moving:d.moving };
+                    }
+                }
+
                 if(!peerPlayer || !state.running) return;
                 
-                if(d.type === 'state') { peerPlayer.tPos.set(d.x, d.y, d.z); peerPlayer.tRot = d.rot; peerPlayer.isM = d.moving; }
                 if(d.type === 'shoot') { createTracer(new THREE.Vector3(d.sx, d.sy, d.sz), new THREE.Vector3(d.dx, d.dy, d.dz), 0xff4655); }
                 if(d.type === 'hit') takeDmg(d.amount); 
                 if(d.type === 'dead') eDie(peerPlayer, d.hs);
                 if(d.type === 'respawn') {
                     peerPlayer.hp = 100; peerPlayer.isDead = false; peerPlayer.group.rotation.x = 0;
+                    peerPlayer.group.visible = true;
                     peerPlayer.group.position.set(d.x, d.y, d.z); peerPlayer.tPos.set(d.x, d.y, d.z);
                     if(peerPlayer.headGroup.parent === scene) scene.remove(peerPlayer.headGroup);
                     peerPlayer.headGroup.position.y = 11.28; 
