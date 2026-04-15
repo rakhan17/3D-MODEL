@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VALOLITE</title>
+    <title>VALOLITE BETA</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <!-- Font Oswald sebagai pengganti Tungsten (Font Valorant) -->
@@ -802,6 +802,14 @@
                 document.getElementById('mp-host-name').innerText = state.playerConfig.name;
                 document.getElementById('mp-host-name').style.color = state.playerConfig.color;
             });
+            peer.on('disconnected', () => {
+                try { peer.reconnect(); } catch(e) {}
+                document.getElementById('mp-status-text').innerText = "NETWORK LOST. RECONNECTING...";
+            });
+            peer.on('close', () => {
+                alert("PEER CLOSED");
+                cancelMP();
+            });
             peer.on('error', err => {
                 alert("PEER ERROR: " + (err && err.type ? err.type : err));
                 cancelMP();
@@ -840,7 +848,7 @@
             const overallTimeout = setTimeout(() => {
                 alert("Connection Timeout. Pastikan Host sudah HOST ROOM dan Peer ID benar.");
                 cancelMP();
-            }, 15000);
+            }, 30000);
 
             peer.on('open', () => {
                 console.log("Guest peer open, connecting to:", jId);
@@ -862,12 +870,22 @@
                     alert("CONNECTION ERROR: " + (err && err.type ? err.type : err));
                     cancelMP();
                 });
+
+                conn.on('close', () => {
+                    clearTimeout(overallTimeout);
+                    alert("NETWORK DISCONNECTED");
+                    cancelMP();
+                });
             });
 
             peer.on('error', err => {
                 clearTimeout(overallTimeout);
                 alert("PEER ERROR: " + (err && err.type ? err.type : err));
                 cancelMP();
+            });
+            peer.on('disconnected', () => {
+                try { peer.reconnect(); } catch(e) {}
+                document.getElementById('mp-status-text').innerText = "NETWORK LOST. RECONNECTING...";
             });
         }
 
@@ -929,6 +947,7 @@
                 if(d.type === 'respawn') {
                     peerPlayer.hp = 100; peerPlayer.isDead = false; peerPlayer.group.rotation.x = 0;
                     peerPlayer.group.visible = true;
+                    if(peerPlayer.headGroup) peerPlayer.headGroup.visible = true;
                     peerPlayer.group.position.set(d.x, d.y, d.z);
                     peerPlayer.tPos.set(d.x, d.y, d.z);
                     peerPlayer.tRot = peerPlayer.group.rotation.y;
@@ -948,7 +967,8 @@
                     peerPlayer.group.rotation.x = 0;
                 }
             });
-            conn.on('close', () => { alert("NETWORK DISCONNECTED"); location.reload(); });
+            conn.on('error', () => { alert("NETWORK ERROR"); cancelMP(); });
+            conn.on('close', () => { alert("NETWORK DISCONNECTED"); cancelMP(); });
         }
 
         function deployMPGame() { if(conn && conn.open && isHost) { conn.send({type:'start'}); startGame(true); } }
@@ -1301,7 +1321,9 @@
             if(C.killBanner) { C.killBanner.classList.add('active'); setTimeout(()=>C.killBanner.classList.remove('active'),2000); }
 
             if(isPeer) {
+                // Keep peer object but fully hide it (prevents "body only" ghost)
                 e.group.visible = false;
+                if(e.headGroup) e.headGroup.visible = false;
                 return;
             }
 
@@ -1822,7 +1844,6 @@
                 peerPlayer.group.position.lerp(peerPlayer.tPos, 0.3); peerPlayer.group.rotation.y += (peerPlayer.tRot - peerPlayer.group.rotation.y)*0.3;
                 if(peerPlayer.isM) { const t=clock.getElapsedTime()*20; peerPlayer.lLeg.rotation.x=Math.sin(t)*0.8; peerPlayer.rLeg.rotation.x=-Math.sin(t)*0.8; peerPlayer.lArm.rotation.x=-Math.sin(t)*0.8; peerPlayer.rArm.rotation.x=Math.sin(t)*0.8; }
                 else { peerPlayer.lLeg.rotation.x=0; peerPlayer.rLeg.rotation.x=0; peerPlayer.lArm.rotation.x=0; peerPlayer.rArm.rotation.x=0; }
-                return;
             }
 
             enemies.forEach(e => {
