@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VALOLITE BETA V1</title>
+    <title>VALOLITE BETA V2</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <!-- Font Oswald sebagai pengganti Tungsten (Font Valorant) -->
@@ -29,6 +29,11 @@
 
         /* ESP Overlay */
         #esp-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 9; }
+
+        #play-overlay { position: absolute; top:0; left:0; width:100%; height:100%; display:none; align-items:center; justify-content:center; z-index: 950; background: rgba(0,0,0,0.6); }
+        #play-overlay .play-card { background: rgba(17,25,35,0.92); border: 1px solid var(--v-border); padding: 26px 32px; text-align:center; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+        #play-overlay .play-card h2 { margin: 0 0 10px 0; letter-spacing: 3px; }
+        #play-overlay .play-card p { margin: 0; color: var(--v-gray); letter-spacing: 1px; }
 
         /* ================= GLOBAL COMPONENT ================= */
         .hidden { display: none !important; }
@@ -240,6 +245,13 @@
     <!-- KANVAS GAME 3D -->
     <canvas id="game-canvas"></canvas>
 
+    <div id="play-overlay">
+        <div class="play-card">
+            <h2>CLICK TO PLAY</h2>
+            <p>Pointer lock diperlukan agar aim & shoot berfungsi.</p>
+        </div>
+    </div>
+
     <!-- ESP OVERLAY (for cheat: ESP_VISION) -->
     <canvas id="esp-overlay"></canvas>
 
@@ -248,9 +260,11 @@
         <h3 style="margin:0 0 10px; border-bottom:1px solid #f0f; color:#f0f;">[ADMIN TERMINAL]</h3>
         <div class="c-item">[1] AUTO_AIM <span class="c-toggle" id="t-aa">OFF</span></div>
         <div class="c-item">[2] ESP_VISION <span class="c-toggle" id="t-esp">OFF</span></div>
+        <div class="c-item">[6] ESP_LINE <span class="c-toggle" id="t-espl">OFF</span></div>
         <div class="c-item">[3] WALLBANG <span class="c-toggle" id="t-wb">OFF</span></div>
         <div class="c-item">[4] GOD_MODE <span class="c-toggle" id="t-god">OFF</span></div>
         <div class="c-item">[5] OVERDRIVE <span class="c-toggle" id="t-nc">OFF</span></div>
+        <div class="c-item">[7] WIREFRAME <span class="c-toggle" id="t-wf">OFF</span></div>
     </div>
 
     <!-- MAIN LOBBY LAYER -->
@@ -440,7 +454,7 @@
             running: false, mode: 'DEATHMATCH', map: 'ARENA', bots: 5,
             playerConfig: { name: 'PLAYER_1', color: '#FF4655' },
             settings: { sens: 0.0015, fov: 85, chCol: '#00ffcc', chGap: 12 },
-            sysC: { aa: false, esp: false, wb: false, god: false, nc: false },
+            sysC: { aa: false, esp: false, espl: false, wb: false, god: false, nc: false, wf: false },
             score: { p1: 0, p2: 0 }
         };
 
@@ -467,6 +481,11 @@
         let peerPlayer = null;
         let pendingPeerState = null;
         let cheatHidden = true;
+        let playOverlayEl = null;
+        let mpStartPending = false;
+
+        let wfActive = false;
+        const wfRestoreMats = new Map();
 
         // ESP canvas
         let espCtx;
@@ -503,6 +522,13 @@
                 espCanvas: document.getElementById('esp-overlay')
             };
 
+            playOverlayEl = document.getElementById('play-overlay');
+            if(playOverlayEl) {
+                playOverlayEl.addEventListener('click', () => {
+                    try { document.body.requestPointerLock(); } catch(e) {}
+                });
+            }
+
             if(C.espCanvas) {
                 espCtx = C.espCanvas.getContext('2d');
             }
@@ -517,6 +543,16 @@
             if(C.fade) setTimeout(() => { C.fade.style.opacity = 0; }, 500);
             
             animate();
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            if(document.pointerLockElement) {
+                if(playOverlayEl) playOverlayEl.style.display = 'none';
+                if(mpStartPending) {
+                    mpStartPending = false;
+                    startGame(true);
+                }
+            }
         });
 
         function resizeAll() {
@@ -841,7 +877,15 @@
                         }
                     }
                 }
-                if(d.type === 'start') { startGame(); }
+                if(d.type === 'start') {
+                    // Guest needs a user gesture for pointer lock. Host can start immediately.
+                    if(!isHost && !document.pointerLockElement) {
+                        mpStartPending = true;
+                        if(playOverlayEl) playOverlayEl.style.display = 'flex';
+                    } else {
+                        startGame(true);
+                    }
+                }
 
                 // Buffer state updates if the peer model isn't spawned yet (prevents enemy stuck at y=5000 / "disappearing")
                 if(d.type === 'state') {
@@ -890,7 +934,7 @@
             conn.on('close', () => { alert("NETWORK DISCONNECTED"); location.reload(); });
         }
 
-        function deployMPGame() { if(conn && conn.open && isHost) { conn.send({type:'start'}); startGame(); } }
+        function deployMPGame() { if(conn && conn.open && isHost) { conn.send({type:'start'}); startGame(true); } }
 
         function cancelMP() {
             if(peer) { peer.destroy(); peer = null; }
@@ -1038,9 +1082,11 @@
         // === INPUT & CONTROLS ===
         window.toggleCheat = function(type, idx) {
             state.sysC[type] = !state.sysC[type];
-            const toggles = ['t-aa', 't-esp', 't-wb', 't-god', 't-nc'];
+            const toggles = ['t-aa', 't-esp', 't-wb', 't-god', 't-nc', 't-espl', 't-wf'];
             const el = document.getElementById(toggles[idx]);
             if(el) { el.innerText = state.sysC[type] ? 'ON' : 'OFF'; el.className = 'c-toggle ' + (state.sysC[type] ? 'on' : ''); }
+
+            if(type === 'wf') applyWireframe(state.sysC.wf);
         };
 
         function onKD(e) {
@@ -1051,6 +1097,8 @@
                 if(e.code==='Digit1') { window.toggleCheat('aa',0); return;} if(e.code==='Digit2') { window.toggleCheat('esp',1); return;}
                 if(e.code==='Digit3') { window.toggleCheat('wb',2); return;} if(e.code==='Digit4') { window.toggleCheat('god',3); return;}
                 if(e.code==='Digit5') { window.toggleCheat('nc',4); return;}
+                if(e.code==='Digit6') { window.toggleCheat('espl',5); return;}
+                if(e.code==='Digit7') { window.toggleCheat('wf',6); return;}
             }
 
             if(e.code==='KeyW') move.f=1; if(e.code==='KeyS') move.b=1; if(e.code==='KeyA') move.l=1; if(e.code==='KeyD') move.r=1;
@@ -1509,6 +1557,28 @@
                 });
             }
 
+            if(state.sysC.espl && espCtx && C.espCanvas) {
+                const cx = C.espCanvas.width * 0.5;
+                const cy = C.espCanvas.height * 0.5;
+                potentialTargets.forEach(e => {
+                    if(!e || e.isDead) return;
+                    const headW = new THREE.Vector3();
+                    e.headGroup.getWorldPosition(headW);
+                    headW.y += 2;
+                    const p = headW.project(camera);
+                    if(p.z < 1) {
+                        const x = (p.x * 0.5 + 0.5) * C.espCanvas.width;
+                        const y = (p.y * -0.5 + 0.5) * C.espCanvas.height;
+                        espCtx.strokeStyle = 'rgba(0,255,204,0.65)';
+                        espCtx.lineWidth = 1;
+                        espCtx.beginPath();
+                        espCtx.moveTo(cx, cy);
+                        espCtx.lineTo(x, y);
+                        espCtx.stroke();
+                    }
+                });
+            }
+
             if(state.sysC.aa && isAim && potentialTargets.length>0) {
                 let bE=null, bD=Infinity;
                 potentialTargets.forEach(e => {
@@ -1637,12 +1707,60 @@
             }
         }
 
-        function startGame() {
+        function applyWireframe(on) {
+            if(!scene) return;
+            wfActive = on;
+            const visit = (obj) => {
+                obj.traverse(n => {
+                    if(!n || !n.isMesh) return;
+                    if(on) {
+                        if(!wfRestoreMats.has(n)) wfRestoreMats.set(n, n.material);
+                        if(Array.isArray(n.material)) {
+                            n.material = n.material.map(m => {
+                                const nm = m.clone();
+                                nm.wireframe = true;
+                                nm.transparent = true;
+                                nm.opacity = 0.9;
+                                return nm;
+                            });
+                        } else {
+                            const nm = n.material.clone();
+                            nm.wireframe = true;
+                            nm.transparent = true;
+                            nm.opacity = 0.9;
+                            n.material = nm;
+                        }
+                    } else {
+                        const orig = wfRestoreMats.get(n);
+                        if(orig) n.material = orig;
+                    }
+                });
+            };
+
+            if(on) {
+                wfRestoreMats.clear();
+                visit(scene);
+            } else {
+                visit(scene);
+                wfRestoreMats.clear();
+            }
+        }
+
+        function startGame(skipPointerLock) {
+            if(!skipPointerLock && !document.pointerLockElement) {
+                mpStartPending = true;
+                if(playOverlayEl) playOverlayEl.style.display = 'flex';
+                return;
+            }
             buildEnv(); 
-            document.body.requestPointerLock();
+            if(!document.pointerLockElement) {
+                try { document.body.requestPointerLock(); } catch(e) {}
+            }
             if(C.lobby) C.lobby.style.display = 'none'; 
             if(C.mpWait) C.mpWait.classList.add('hidden'); 
             if(C.uiLayer) C.uiLayer.style.display = 'block';
+
+            if(playOverlayEl) playOverlayEl.style.display = 'none';
             
             state.score = {p1:0, p2:0}; if(C.scoreMy) C.scoreMy.innerText=0; if(C.scoreEn) C.scoreEn.innerText=0; 
             if(C.hpNum) { C.hpNum.innerText=100; C.hpNum.style.color='var(--v-white)'; }
@@ -1668,6 +1786,8 @@
             yaw = isMP && !isHost ? Math.PI : 0; pitch = 0; camera.quaternion.setFromEuler(new THREE.Euler(pitch,yaw,0,'YXZ'));
             
             state.running = true; clock.getDelta(); lastRegen = clock.getElapsedTime();
+
+            if(state.sysC.wf) applyWireframe(true);
         }
 
     </script>
