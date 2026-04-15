@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VALOLITE</title>
+    <title>VALOLITE OLIVE</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <!-- Font Oswald sebagai pengganti Tungsten (Font Valorant) -->
@@ -494,6 +494,8 @@
 
         // ESP canvas
         let espCtx;
+
+        let aaTarget = null;
 
         // === INITIALIZATION SECURE FIX ===
         document.addEventListener('DOMContentLoaded', () => {
@@ -1181,10 +1183,28 @@
         function doShoot() {
             const w = weapons[actWpn]; w.cA--; C.ammoCur.innerText = w.cA; canShoot = false;
             w.flash.visible = true; w.flash.rotation.z = Math.random() * Math.PI;
-            
-            let rec = isAim ? w.rec*0.2 : w.rec; rot.p += rec; 
-            let spr = (Math.abs(pVel.x)+Math.abs(pVel.z))>20 && !isAim ? w.spr*5 : 0;
-            let fY = rot.y + (Math.random()-0.5)*spr; let fP = rot.p + (Math.random()-0.5)*spr;
+
+            const aaOn = (state.sysC.aa && isAim && aaTarget && !aaTarget.isDead);
+
+            let fY = rot.y;
+            let fP = rot.p;
+
+            if(aaOn) {
+                const hp = new THREE.Vector3();
+                if(aaTarget.headMesh) aaTarget.headMesh.getWorldPosition(hp);
+                else aaTarget.headGroup.getWorldPosition(hp);
+                const d = new THREE.Vector3().subVectors(hp, camera.position).normalize();
+                fY = Math.atan2(-d.x, -d.z);
+                fP = Math.asin(d.y);
+                rot.y = fY;
+                rot.p = fP;
+            } else {
+                let rec = isAim ? w.rec*0.2 : w.rec; rot.p += rec;
+                let spr = (Math.abs(pVel.x)+Math.abs(pVel.z))>20 && !isAim ? w.spr*5 : 0;
+                fY = rot.y + (Math.random()-0.5)*spr;
+                fP = rot.p + (Math.random()-0.5)*spr;
+            }
+
             camera.quaternion.setFromEuler(new THREE.Euler(rot.p, rot.y, 0, 'YXZ'));
             
             w.rZT = 0.3; setTimeout(()=>{ w.flash.visible=false; }, 30);
@@ -1749,6 +1769,7 @@
                     if(d < bD) { bD = d; bE = e; }
                 });
                 if(bE) {
+                    aaTarget = bE;
                     let hp = new THREE.Vector3();
                     bE.headMesh.getWorldPosition(hp); // Lock specifically to headMesh for guaranteed HS
                     let d = new THREE.Vector3().subVectors(hp, camera.position).normalize();
@@ -1756,7 +1777,9 @@
                     rot.y = Math.atan2(-d.x, -d.z);
                     rot.p = Math.asin(d.y);
                 }
+                else aaTarget = null;
             }
+            else aaTarget = null;
 
             if(isMP && peerPlayer && !peerPlayer.isDead) {
                 peerPlayer.group.position.lerp(peerPlayer.tPos, 0.3); peerPlayer.group.rotation.y += (peerPlayer.tRot - peerPlayer.group.rotation.y)*0.3;
