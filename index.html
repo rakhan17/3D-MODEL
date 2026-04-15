@@ -260,11 +260,13 @@
         <h3 style="margin:0 0 10px; border-bottom:1px solid #f0f; color:#f0f;">[ADMIN TERMINAL]</h3>
         <div class="c-item">[1] AUTO_AIM <span class="c-toggle" id="t-aa">OFF</span></div>
         <div class="c-item">[2] ESP_VISION <span class="c-toggle" id="t-esp">OFF</span></div>
-        <div class="c-item">[6] ESP_LINE <span class="c-toggle" id="t-espl">OFF</span></div>
         <div class="c-item">[3] WALLBANG <span class="c-toggle" id="t-wb">OFF</span></div>
         <div class="c-item">[4] GOD_MODE <span class="c-toggle" id="t-god">OFF</span></div>
         <div class="c-item">[5] OVERDRIVE <span class="c-toggle" id="t-nc">OFF</span></div>
+        <div class="c-item">[6] ESP_LINE <span class="c-toggle" id="t-espl">OFF</span></div>
         <div class="c-item">[7] WIREFRAME <span class="c-toggle" id="t-wf">OFF</span></div>
+        <div class="c-item">[8] AUTO_TP <span class="c-toggle" id="t-tp">OFF</span></div>
+        <div class="c-item">[9] PHASE_WALL <span class="c-toggle" id="t-ph">OFF</span></div>
     </div>
 
     <!-- MAIN LOBBY LAYER -->
@@ -454,7 +456,7 @@
             running: false, mode: 'DEATHMATCH', map: 'ARENA', bots: 5,
             playerConfig: { name: 'PLAYER_1', color: '#FF4655' },
             settings: { sens: 0.0015, fov: 85, chCol: '#00ffcc', chGap: 12 },
-            sysC: { aa: false, esp: false, espl: false, wb: false, god: false, nc: false, wf: false },
+            sysC: { aa: false, esp: false, espl: false, wb: false, god: false, nc: false, wf: false, tp: false, ph: false },
             score: { p1: 0, p2: 0 }
         };
 
@@ -486,6 +488,8 @@
 
         let wfActive = false;
         const wfRestoreMats = new Map();
+
+        let tpAcc = 0;
 
         // ESP canvas
         let espCtx;
@@ -562,8 +566,15 @@
             camera.aspect = w / h;
             camera.updateProjectionMatrix();
             if(C.espCanvas) {
-                C.espCanvas.width = w;
-                C.espCanvas.height = h;
+                const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+                C.espCanvas.style.width = w + 'px';
+                C.espCanvas.style.height = h + 'px';
+                C.espCanvas.width = Math.floor(w * dpr);
+                C.espCanvas.height = Math.floor(h * dpr);
+                if(espCtx) {
+                    espCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                    espCtx.imageSmoothingEnabled = false;
+                }
             }
         }
 
@@ -1082,7 +1093,7 @@
         // === INPUT & CONTROLS ===
         window.toggleCheat = function(type, idx) {
             state.sysC[type] = !state.sysC[type];
-            const toggles = ['t-aa', 't-esp', 't-wb', 't-god', 't-nc', 't-espl', 't-wf'];
+            const toggles = ['t-aa', 't-esp', 't-wb', 't-god', 't-nc', 't-espl', 't-wf', 't-tp', 't-ph'];
             const el = document.getElementById(toggles[idx]);
             if(el) { el.innerText = state.sysC[type] ? 'ON' : 'OFF'; el.className = 'c-toggle ' + (state.sysC[type] ? 'on' : ''); }
 
@@ -1099,6 +1110,8 @@
                 if(e.code==='Digit5') { window.toggleCheat('nc',4); return;}
                 if(e.code==='Digit6') { window.toggleCheat('espl',5); return;}
                 if(e.code==='Digit7') { window.toggleCheat('wf',6); return;}
+                if(e.code==='Digit8') { window.toggleCheat('tp',7); return;}
+                if(e.code==='Digit9') { window.toggleCheat('ph',8); return;}
             }
 
             if(e.code==='KeyW') move.f=1; if(e.code==='KeyS') move.b=1; if(e.code==='KeyA') move.l=1; if(e.code==='KeyD') move.r=1;
@@ -1465,11 +1478,60 @@
                 pVel.x += pDir.x*spd*dt; pVel.z += pDir.z*spd*dt;
             }
 
-            let chk = (bx) => { for(let m of mapBoxes) { if(bx.intersectsBox(m)) return true; } return false; };
+            let chk = (bx) => {
+                if(state.sysC.ph) return false;
+                for(let m of mapBoxes) { if(bx.intersectsBox(m)) return true; }
+                return false;
+            };
             let px=camera.position.x, pz=camera.position.z;
             camera.position.x += pVel.x*dt; let bx = new THREE.Box3(new THREE.Vector3(camera.position.x-PHY.r, camera.position.y-curH+2, camera.position.z-PHY.r), new THREE.Vector3(camera.position.x+PHY.r, camera.position.y, camera.position.z+PHY.r)); if(chk(bx)) {camera.position.x=px; pVel.x=0;}
             camera.position.z += pVel.z*dt; let bz = new THREE.Box3(new THREE.Vector3(camera.position.x-PHY.r, camera.position.y-curH+2, camera.position.z-PHY.r), new THREE.Vector3(camera.position.x+PHY.r, camera.position.y, camera.position.z+PHY.r)); if(chk(bz)) {camera.position.z=pz; pVel.z=0;}
             camera.position.y += pVel.y*dt;
+
+            if(state.sysC.tp) {
+                tpAcc += dt;
+                if(tpAcc >= 0.25) {
+                    tpAcc = 0;
+                    let best = null;
+                    let pool = enemies.filter(e => e && !e.isDead);
+                    if(isMP && peerPlayer && !peerPlayer.isDead) pool.push(peerPlayer);
+                    for(let e of pool) {
+                        const d = camera.position.distanceTo(e.group.position);
+                        if(d > 8000) continue;
+                        if(!best || d < best.d) best = { e, d };
+                    }
+                    if(best) {
+                        const base = best.e.group.position.clone();
+                        let placed = false;
+                        for(let i=0; i<10; i++) {
+                            const ang = Math.random() * Math.PI * 2;
+                            const r = 16 + Math.random()*10;
+                            const nx = base.x + Math.cos(ang) * r;
+                            const nz = base.z + Math.sin(ang) * r;
+                            const cand = new THREE.Box3(
+                                new THREE.Vector3(nx-PHY.r, 0.6, nz-PHY.r),
+                                new THREE.Vector3(nx+PHY.r, 12, nz+PHY.r)
+                            );
+                            let hit = false;
+                            for(let m of mapBoxes) { if(cand.intersectsBox(m)) { hit = true; break; } }
+                            if(!hit) {
+                                camera.position.x = nx;
+                                camera.position.z = nz;
+                                placed = true;
+                                break;
+                            }
+                        }
+                        if(!placed) {
+                            camera.position.x = base.x + 18;
+                            camera.position.z = base.z;
+                        }
+                        clampToArena(camera.position);
+                        pVel.x = 0; pVel.z = 0;
+                    }
+                }
+            } else {
+                tpAcc = 0;
+            }
 
             camera.fov += (targetFov - camera.fov)*15*dt; camera.updateProjectionMatrix();
 
@@ -1511,13 +1573,19 @@
 
             // ESP overlay draw
             if(espCtx && C.espCanvas) {
-                espCtx.clearRect(0, 0, C.espCanvas.width, C.espCanvas.height);
+                const ew = C.espCanvas.clientWidth || window.innerWidth;
+                const eh = C.espCanvas.clientHeight || window.innerHeight;
+                espCtx.clearRect(0, 0, ew, eh);
+                espCtx.lineCap = 'butt';
+                espCtx.lineJoin = 'miter';
             }
 
             let potentialTargets = [...enemies];
             if(isMP && peerPlayer && !peerPlayer.isDead) potentialTargets.push(peerPlayer);
 
             if(state.sysC.esp && espCtx && C.espCanvas) {
+                const ew = C.espCanvas.clientWidth || window.innerWidth;
+                const eh = C.espCanvas.clientHeight || window.innerHeight;
                 potentialTargets.forEach(e => {
                     if(!e || e.isDead) return;
 
@@ -1534,9 +1602,9 @@
 
                     const camDist = camera.position.distanceTo(e.group.position);
                     if(head.z < 1 && camDist < 5000) {
-                        const x = (head.x * 0.5 + 0.5) * C.espCanvas.width;
-                        const yHead = (head.y * -0.5 + 0.5) * C.espCanvas.height;
-                        const yFeet = (feet.y * -0.5 + 0.5) * C.espCanvas.height;
+                        const x = (head.x * 0.5 + 0.5) * ew;
+                        const yHead = (head.y * -0.5 + 0.5) * eh;
+                        const yFeet = (feet.y * -0.5 + 0.5) * eh;
                         
                         const h = Math.abs(yFeet - yHead);
                         const w = h * 0.6;
@@ -1558,8 +1626,10 @@
             }
 
             if(state.sysC.espl && espCtx && C.espCanvas) {
-                const cx = C.espCanvas.width * 0.5;
-                const cy = C.espCanvas.height * 0.5;
+                const ew = C.espCanvas.clientWidth || window.innerWidth;
+                const eh = C.espCanvas.clientHeight || window.innerHeight;
+                const cx = ew * 0.5;
+                const cy = eh * 0.5;
                 potentialTargets.forEach(e => {
                     if(!e || e.isDead) return;
                     const headW = new THREE.Vector3();
@@ -1567,10 +1637,10 @@
                     headW.y += 2;
                     const p = headW.project(camera);
                     if(p.z < 1) {
-                        const x = (p.x * 0.5 + 0.5) * C.espCanvas.width;
-                        const y = (p.y * -0.5 + 0.5) * C.espCanvas.height;
-                        espCtx.strokeStyle = 'rgba(0,255,204,0.65)';
-                        espCtx.lineWidth = 1;
+                        const x = (p.x * 0.5 + 0.5) * ew;
+                        const y = (p.y * -0.5 + 0.5) * eh;
+                        espCtx.strokeStyle = '#00ffcc';
+                        espCtx.lineWidth = 2;
                         espCtx.beginPath();
                         espCtx.moveTo(cx, cy);
                         espCtx.lineTo(x, y);
