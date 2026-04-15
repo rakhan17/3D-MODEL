@@ -447,6 +447,7 @@
         // Network
         let peer, conn, isHost = false, isMP = false;
         let peerData = { name: '', color: '#ffffff' };
+        let mpStateSendAcc = 0;
 
         // Engine 
         let scene, camera, renderer, clock, targetFov = 85;
@@ -776,6 +777,10 @@
             document.getElementById('mp-status-text').innerText = "LINKING TO HOST NETWORK...";
             isMP = true; state.mode = 'MULTIPLAYER P2P'; updateLobbyText();
 
+            // Always show your own nickname on your machine (guest panel)
+            document.getElementById('mp-guest-name').innerText = state.playerConfig.name;
+            document.getElementById('mp-guest-name').style.color = state.playerConfig.color;
+
             if(peer) { try { peer.destroy(); } catch(e) {} peer = null; }
             peer = createPeer();
 
@@ -844,6 +849,12 @@
                         peerPlayer.tPos.set(d.x, d.y, d.z);
                         peerPlayer.tRot = d.rot;
                         peerPlayer.isM = d.moving;
+
+                        // If we're heavily desynced (often after respawn / packet backlog), snap to the new position
+                        if(peerPlayer.group && peerPlayer.group.position.distanceToSquared(peerPlayer.tPos) > 90000) {
+                            peerPlayer.group.position.copy(peerPlayer.tPos);
+                            peerPlayer.group.rotation.y = peerPlayer.tRot;
+                        }
                     } else {
                         pendingPeerState = { x:d.x, y:d.y, z:d.z, rot:d.rot, moving:d.moving };
                     }
@@ -857,10 +868,23 @@
                 if(d.type === 'respawn') {
                     peerPlayer.hp = 100; peerPlayer.isDead = false; peerPlayer.group.rotation.x = 0;
                     peerPlayer.group.visible = true;
-                    peerPlayer.group.position.set(d.x, d.y, d.z); peerPlayer.tPos.set(d.x, d.y, d.z);
+                    peerPlayer.group.position.set(d.x, d.y, d.z);
+                    peerPlayer.tPos.set(d.x, d.y, d.z);
+                    peerPlayer.tRot = peerPlayer.group.rotation.y;
+
+                    // If the head was previously in flyingHeads, stop simulating it.
+                    flyingHeads = flyingHeads.filter(h => h.m !== peerPlayer.headGroup);
+
                     if(peerPlayer.headGroup.parent === scene) scene.remove(peerPlayer.headGroup);
                     peerPlayer.headGroup.position.y = 11.28; 
                     peerPlayer.group.add(peerPlayer.headGroup);
+
+                    // Reset ragdoll pose back to normal
+                    peerPlayer.lArm.rotation.set(0,0,0);
+                    peerPlayer.rArm.rotation.set(0,0,0);
+                    peerPlayer.lLeg.rotation.set(0,0,0);
+                    peerPlayer.rLeg.rotation.set(0,0,0);
+                    peerPlayer.group.rotation.x = 0;
                 }
             });
             conn.on('close', () => { alert("NETWORK DISCONNECTED"); location.reload(); });
@@ -1177,7 +1201,8 @@
             e.lLeg.rotation.x = Math.PI/2;
             e.rLeg.rotation.x = Math.PI/2;
 
-            if(isH) {
+            // In MP, avoid detaching the peer head into flyingHeads (causes head missing + ESP desync on respawn)
+            if(isH && !(isPeer)) {
                 let hp = new THREE.Vector3();
                 e.headGroup.getWorldPosition(hp);
                 scene.attach(e.headGroup);
@@ -1339,7 +1364,7 @@
 
         function spawnPeer() {
             let r6 = createR6Model(peerData.color); r6.group.position.set(0,5000,0);
-            peerPlayer = { ...r6, hp:100, isDead:false, tPos:new THREE.Vector3(), tRot:0, isM:false };
+            peerPlayer = { ...r6, hp:100, isDead:false, tPos:r6.group.position.clone(), tRot:0, isM:false };
             r6.group.traverse(c => {
                 if(c.isMesh) { c.userData.isEnemy=true; c.userData.eRef=peerPlayer; targets.push(c); }
             });
@@ -1419,7 +1444,13 @@
                 }
             }
 
-            if(isMP && conn && conn.open) conn.send({type:'state', x:camera.position.x, y:camera.position.y-curH, z:camera.position.z, rot:rot.y, moving:isM});
+            if(isMP && conn && conn.open) {
+                mpStateSendAcc += dt;
+                if(mpStateSendAcc >= 0.05) {
+                    mpStateSendAcc = 0;
+                    conn.send({type:'state', x:camera.position.x, y:camera.position.y-curH, z:camera.position.z, rot:rot.y, moving:isM});
+                }
+            }
         }
 
         function simAI(dt) {
